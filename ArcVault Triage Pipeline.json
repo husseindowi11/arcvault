@@ -1,0 +1,711 @@
+{
+  "name": "ArcVault Triage Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "arcvault-intake",
+        "options": {}
+      },
+      "id": "38280d95-436d-477b-9326-1313d42103c4",
+      "name": "Inbound Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2416,
+        192
+      ],
+      "webhookId": "arcvault-intake-2026"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nreturn [{\n  json: {\n    raw_message: body.message || '',\n    source: body.source || 'Unknown',\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "426d0860-8f83-4400-83f4-c344f96ed0b6",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2176,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst prompt = `Classify the following customer message.\\n\\nMessage: ${data.raw_message}\\nSource: ${data.source}\\n\\nReturn a JSON object with this exact structure:\\n{\\n  \\\"category\\\": \\\"<one of: Bug Report, Feature Request, Billing Issue, Technical Question, Incident/Outage>\\\",\\n  \\\"priority\\\": \\\"<one of: Low, Medium, High>\\\",\\n  \\\"confidence_score\\\": <integer 0-100>\\n}\\n\\nPriority rules:\\n- High: service down, data loss, security issue, billing discrepancy > $200\\n- Medium: functionality broken for the user, billing questions, auth issues\\n- Low: feature requests, general inquiries, how-to questions\\n\\nConfidence score: how certain you are about the category (0=uncertain, 100=certain).`;\n\nreturn [{\n  json: {\n    ...data,\n    gemini_body: JSON.stringify({\n      systemInstruction: { parts: [{ text: 'You are a B2B SaaS support triage classifier. Analyze inbound customer messages and return a structured JSON classification. Be consistent and precise.' }] },\n      contents: [{ role: 'user', parts: [{ text: prompt }] }],\n      generationConfig: { temperature: 0, responseMimeType: 'application/json' }\n    })\n  }\n}];"
+      },
+      "id": "5e00b610-8247-4d7a-8502-7aa41bd33acc",
+      "name": "Build Classification Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1936,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.gemini_body }}",
+        "options": {}
+      },
+      "id": "6a0866c8-d01b-4e1a-bc0a-2e5944cad008",
+      "name": "Call Gemini - Classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1696,
+        192
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "9hjD9JR6GSd22wRh",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const responseData = $input.first().json;\nconst prevData = $('Build Classification Request').first().json;\nconst raw = responseData.candidates[0].content.parts[0].text;\nconst parsed = JSON.parse(raw);\nreturn [{\n  json: {\n    raw_message: prevData.raw_message,\n    source: prevData.source,\n    timestamp: prevData.timestamp,\n    category: parsed.category,\n    priority: parsed.priority,\n    confidence_score: parsed.confidence_score\n  }\n}];"
+      },
+      "id": "2d192a80-81e5-465b-a646-af7192b3cfa2",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1456,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst prompt = `Extract structured information from this customer message.\\n\\nMessage: ${data.raw_message}\\nCategory: ${data.category}\\n\\nReturn a JSON object with this exact structure:\\n{\\n  \\\"core_issue\\\": \\\"<one sentence describing the core problem or request>\\\",\\n  \\\"extracted_identifiers\\\": {\\n    \\\"account_id\\\": \\\"<account ID or username if mentioned, else null>\\\",\\n    \\\"invoice_number\\\": \\\"<invoice number if mentioned, else null>\\\",\\n    \\\"error_code\\\": \\\"<error code if mentioned, else null>\\\",\\n    \\\"other\\\": \\\"<any other relevant ID or reference, else null>\\\"\\n  },\\n  \\\"urgency_signal\\\": \\\"<one of: Critical, Elevated, Normal>\\\"\\n}\\n\\nUrgency signal:\\n- Critical: multiple users affected, full service outage, data loss, security breach\\n- Elevated: single user blocked, billing discrepancy, auth failure, time-sensitive\\n- Normal: general inquiry, feature request, non-blocking question`;\n\nreturn [{\n  json: {\n    ...data,\n    gemini_body: JSON.stringify({\n      systemInstruction: { parts: [{ text: 'You are a support ticket enrichment agent. Extract structured information from customer messages.' }] },\n      contents: [{ role: 'user', parts: [{ text: prompt }] }],\n      generationConfig: { temperature: 0, responseMimeType: 'application/json' }\n    })\n  }\n}];"
+      },
+      "id": "599fa82e-ee0e-4ebc-8d6c-e4b90c1d3820",
+      "name": "Build Enrichment Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1216,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.gemini_body }}",
+        "options": {}
+      },
+      "id": "2949af3e-5d36-4969-bf69-b97ab40aee65",
+      "name": "Call Gemini - Enrich",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -976,
+        192
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "9hjD9JR6GSd22wRh",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const responseData = $input.first().json;\nconst prevData = $('Build Enrichment Request').first().json;\nconst raw = responseData.candidates[0].content.parts[0].text;\nconst parsed = JSON.parse(raw);\nreturn [{\n  json: {\n    raw_message: prevData.raw_message,\n    source: prevData.source,\n    timestamp: prevData.timestamp,\n    category: prevData.category,\n    priority: prevData.priority,\n    confidence_score: prevData.confidence_score,\n    core_issue: parsed.core_issue,\n    extracted_identifiers: JSON.stringify(parsed.extracted_identifiers),\n    urgency_signal: parsed.urgency_signal\n  }\n}];"
+      },
+      "id": "45359ba3-8494-4375-9bfa-60b6cc7905b5",
+      "name": "Parse Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -736,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst prompt = `Write a 2-3 sentence human-readable summary of this support ticket for the receiving team.\\n\\nOriginal message: ${data.raw_message}\\nCategory: ${data.category}\\nPriority: ${data.priority}\\nCore issue: ${data.core_issue}\\nIdentifiers: ${data.extracted_identifiers}`;\n\nreturn [{\n  json: {\n    ...data,\n    gemini_body: JSON.stringify({\n      systemInstruction: { parts: [{ text: 'You are a support ticket summarizer. Write a clear, professional 2-3 sentence summary suitable for the internal team receiving this ticket. Be factual, include key identifiers, and state the required action. Return only the summary text, no JSON, no bullet points, no headings.' }] },\n      contents: [{ role: 'user', parts: [{ text: prompt }] }],\n      generationConfig: { temperature: 0.2 }\n    })\n  }\n}];"
+      },
+      "id": "4013b22c-25aa-40d3-b0d6-29facec07a12",
+      "name": "Build Summary Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -496,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.gemini_body }}",
+        "options": {}
+      },
+      "id": "0b2f48ee-f58c-4994-a4e3-79845b9ab3d1",
+      "name": "Call Gemini - Summarize",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -256,
+        192
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "9hjD9JR6GSd22wRh",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const responseData = $input.first().json;\nconst prevData = $('Build Summary Request').first().json;\nconst summary = responseData.candidates[0].content.parts[0].text.trim();\n\nconst routingMap = {\n  'Bug Report': 'Engineering',\n  'Incident/Outage': 'Engineering',\n  'Feature Request': 'Product',\n  'Technical Question': 'IT/Security',\n  'Billing Issue': 'Billing'\n};\n\nconst msg = prevData.raw_message.toLowerCase();\nconst amountMatch = msg.match(/\\$[\\d,]+/);\nconst amount = amountMatch ? parseFloat(amountMatch[0].replace(/[$,]/g, '')) : 0;\n\nconst escalate =\n  prevData.confidence_score < 70 ||\n  msg.includes('outage') ||\n  msg.includes('down for all') ||\n  msg.includes('billing error') ||\n  amount > 500 ||\n  prevData.urgency_signal === 'Critical';\n\nreturn [{\n  json: {\n    timestamp: prevData.timestamp,\n    source: prevData.source,\n    raw_message: prevData.raw_message,\n    category: prevData.category,\n    priority: prevData.priority,\n    confidence_score: prevData.confidence_score,\n    core_issue: prevData.core_issue,\n    extracted_identifiers: prevData.extracted_identifiers,\n    urgency_signal: prevData.urgency_signal,\n    routing_destination: routingMap[prevData.category] || 'General',\n    escalation_flag: escalate,\n    summary: summary\n  }\n}];"
+      },
+      "id": "24894b8e-a6ca-4b54-b699-d581e75738b5",
+      "name": "Finalize Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "escalation-condition-1",
+              "leftValue": "={{ $json.escalation_flag }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00c2dff6-dd79-4aa8-b39e-2644e9d2fac1",
+      "name": "Escalation Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        224,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1szbiE9jF_3neWyxr4xdFCgMsNtsKNzueEij4KxKk2Tk",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "escalation_queue",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "source": "={{ $json.source }}",
+            "raw_message": "={{ $json.raw_message }}",
+            "category": "={{ $json.category }}",
+            "priority": "={{ $json.priority }}",
+            "confidence_score": "={{ $json.confidence_score }}",
+            "core_issue": "={{ $json.core_issue }}",
+            "extracted_identifiers": "={{ $json.extracted_identifiers }}",
+            "urgency_signal": "={{ $json.urgency_signal }}",
+            "routing_destination": "={{ $json.routing_destination }}",
+            "escalation_flag": "={{ $json.escalation_flag }}",
+            "summary": "={{ $json.summary }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "raw_message",
+              "displayName": "raw_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "confidence_score",
+              "displayName": "confidence_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "core_issue",
+              "displayName": "core_issue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "extracted_identifiers",
+              "displayName": "extracted_identifiers",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "urgency_signal",
+              "displayName": "urgency_signal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "routing_destination",
+              "displayName": "routing_destination",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "escalation_flag",
+              "displayName": "escalation_flag",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6df6fcdb-0d24-4f8c-bcd8-7b445fa99350",
+      "name": "Write to Escalation Queue",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        464,
+        32
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "emrNzCnefYotJ1EP",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1szbiE9jF_3neWyxr4xdFCgMsNtsKNzueEij4KxKk2Tk",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "triage_records",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "source": "={{ $json.source }}",
+            "raw_message": "={{ $json.raw_message }}",
+            "category": "={{ $json.category }}",
+            "priority": "={{ $json.priority }}",
+            "confidence_score": "={{ $json.confidence_score }}",
+            "extracted_identifiers": "={{ $json.extracted_identifiers }}",
+            "core_issue": "={{ $json.core_issue }}",
+            "urgency_signal": "={{ $json.urgency_signal }}",
+            "routing_destination": "={{ $json.routing_destination }}",
+            "escalation_flag": "={{ $json.escalation_flag }}",
+            "summary": "={{ $json.summary }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_message",
+              "displayName": "raw_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence_score",
+              "displayName": "confidence_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "core_issue",
+              "displayName": "core_issue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "extracted_identifiers",
+              "displayName": "extracted_identifiers",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "urgency_signal",
+              "displayName": "urgency_signal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "routing_destination",
+              "displayName": "routing_destination",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "escalation_flag",
+              "displayName": "escalation_flag",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b8da74da-9601-43b3-9f08-e5f4c8209d08",
+      "name": "Write to Triage Records",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        464,
+        352
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "emrNzCnefYotJ1EP",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Inbound Request": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Build Classification Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Classification Request": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini - Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini - Classify": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "Build Enrichment Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enrichment Request": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini - Enrich",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini - Enrich": {
+      "main": [
+        [
+          {
+            "node": "Parse Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Build Summary Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary Request": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini - Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini - Summarize": {
+      "main": [
+        [
+          {
+            "node": "Finalize Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Record": {
+      "main": [
+        [
+          {
+            "node": "Escalation Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Check": {
+      "main": [
+        [
+          {
+            "node": "Write to Escalation Queue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write to Triage Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5b607ecb-db8c-4d31-98e7-416826f3f149",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "262f6d89d7330e2ff7cbacb4bc89f38d16b19f154a86efe549a82211f794ebf2"
+  },
+  "id": "hDFoXXiIG0QlsHhD",
+  "tags": []
+}
